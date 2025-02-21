@@ -1,17 +1,11 @@
 {
-  "name": "telegram-bot",
+  "name": "telegram-welcome-bot",
   "version": "1.0.0",
-  "description": "A Telegram bot that sends global messages",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.56.0"
-  },
-  "engines": {
-    "node": "14.x"
-  },
-  "author": "",
-  "license": "ISC"
+    "node-telegram-bot-api": "^0.58.0"
+  }
 }
