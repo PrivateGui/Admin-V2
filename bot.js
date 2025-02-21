@@ -11,7 +11,9 @@ const broadcastTargets = new Set();
 
 // Track user state for the admin
 const userState = {
-  waitingForGlobalMessage: false
+  waitingForGlobalMessage: false,
+  lastBotMessageId: null,  // Track last bot message ID for editing
+  lastChatId: null         // Track last chat ID for editing
 };
 
 // Persian strings with emojis and formatting
@@ -20,8 +22,24 @@ const strings = {
   sendGlobalMessage: '📢 ارسال پیام سراسری',
   back: '⬅️ بازگشت',
   enterMessage: '✏️ *لطفا پیام خود را برای ارسال سراسری وارد کنید:*',
-  messageSent: '✅ *موفق* | پیام شما با موفقیت به همه گروه‌ها و کانال‌ها ارسال شد'
+  messageSent: '✅ *موفق* | پیام شما با موفقیت به همه گروه‌ها و کانال‌ها ارسال شد',
+  sending: '🔄 *در حال ارسال پیام...*'
 };
+
+// Initialize: Get all chats that the bot is in
+bot.getUpdates(0, 100, -1).then(updates => {
+  updates.forEach(update => {
+    if (update.message && 
+      (update.message.chat.type === 'group' || 
+       update.message.chat.type === 'supergroup' || 
+       update.message.chat.type === 'channel')) {
+      broadcastTargets.add(update.message.chat.id);
+      console.log(`🟢 Added ${update.message.chat.title} (${update.message.chat.id}) to broadcast list`);
+    }
+  });
+}).catch(error => {
+  console.error(`❌ Error getting updates: ${error.message}`);
+});
 
 // Add chats to broadcast list when the bot is added
 bot.on('my_chat_member', (msg) => {
@@ -57,10 +75,14 @@ bot.onText(/پنل/, async (msg) => {
     };
     
     // Send admin panel message
-    await bot.sendMessage(chatId, strings.panelTitle, {
+    const sentMsg = await bot.sendMessage(chatId, strings.panelTitle, {
       parse_mode: 'Markdown',
       reply_markup: inlineKeyboard
     });
+    
+    // Store message ID for future editing
+    userState.lastBotMessageId = sentMsg.message_id;
+    userState.lastChatId = chatId;
   }
 });
 
@@ -90,9 +112,12 @@ bot.on('callback_query', async (callbackQuery) => {
         reply_markup: { inline_keyboard: [] }
       });
       
-      // Send back button as reply keyboard
-      await bot.sendMessage(chatId, '👇 *منتظر پیام شما هستم...*', {
-        parse_mode: 'Markdown',
+      // Update stored message ID
+      userState.lastBotMessageId = messageId;
+      userState.lastChatId = chatId;
+      
+      // Send keyboard separately (can't add reply_markup when editing)
+      const keyboardMsg = await bot.sendMessage(chatId, '👇', {
         reply_markup: replyKeyboard
       });
     }
@@ -118,10 +143,22 @@ bot.onText(new RegExp(strings.back), async (msg) => {
       ]
     };
     
-    // Send the panel message again
-    await bot.sendMessage(chatId, strings.panelTitle, {
+    // Edit the last bot message back to panel
+    if (userState.lastBotMessageId) {
+      await bot.editMessageText(strings.panelTitle, {
+        chat_id: userState.lastChatId,
+        message_id: userState.lastBotMessageId,
+        parse_mode: 'Markdown',
+        reply_markup: inlineKeyboard
+      }).catch(err => {
+        console.error('Error editing message:', err.message);
+      });
+    }
+    
+    // Remove keyboard
+    await bot.sendMessage(chatId, '⌨️ *کیبورد حذف شد*', {
       parse_mode: 'Markdown',
-      reply_markup: inlineKeyboard
+      reply_markup: { remove_keyboard: true }
     });
   }
 });
@@ -132,7 +169,7 @@ bot.on('message', async (msg) => {
   const username = msg.from.username;
   
   // Skip handling of command messages
-  if (msg.text === 'پنل' || msg.text === strings.back) {
+  if (msg.text === 'پنل' || (msg.text && msg.text === strings.back)) {
     return;
   }
   
@@ -141,56 +178,120 @@ bot.on('message', async (msg) => {
       msg.chat.type === 'private' && 
       userState.waitingForGlobalMessage) {
     
-    // Reset state
-    userState.waitingForGlobalMessage = false;
+    // Edit last bot message to show sending status
+    if (userState.lastBotMessageId) {
+      await bot.editMessageText(strings.sending, {
+        chat_id: userState.lastChatId, 
+        message_id: userState.lastBotMessageId,
+        parse_mode: 'Markdown'
+      }).catch(err => {
+        console.error('Error editing message:', err.message);
+      });
+    }
     
-    // Show sending status
-    const statusMsg = await bot.sendMessage(chatId, '🔄 *در حال ارسال پیام...*', {
-      parse_mode: 'Markdown'
-    });
+    // Get all chats the bot is in (refresh list)
+    const chats = await bot.getChats();
+    if (chats && chats.length) {
+      chats.forEach(chat => {
+        if (chat.type === 'group' || chat.type === 'supergroup' || chat.type === 'channel') {
+          broadcastTargets.add(chat.id);
+        }
+      });
+    }
     
     // Send the message to all groups and channels
     let successCount = 0;
+    const targetPromises = [];
+    
+    // Capture all broadcast promises
     for (const targetId of broadcastTargets) {
       try {
-        await bot.sendMessage(targetId, msg.text);
-        successCount++;
+        const promise = bot.sendMessage(targetId, msg.text)
+          .then(() => {
+            successCount++;
+            return true;
+          })
+          .catch(error => {
+            console.error(`❌ Failed to send message to ${targetId}: ${error.message}`);
+            // If we can't send to this chat, it might be because we were kicked/removed
+            if (error.response && error.response.statusCode === 403) {
+              broadcastTargets.delete(targetId);
+            }
+            return false;
+          });
+        
+        targetPromises.push(promise);
       } catch (error) {
-        console.error(`❌ Failed to send message to ${targetId}: ${error.message}`);
-        // If we can't send to this chat, it might be because we were kicked/removed
-        broadcastTargets.delete(targetId);
+        console.error(`❌ Error creating promise for ${targetId}: ${error.message}`);
       }
     }
     
-    // Create inline keyboard for panel
-    const inlineKeyboard = {
-      inline_keyboard: [
-        [{ text: strings.sendGlobalMessage, callback_data: 'send_global' }]
-      ]
-    };
+    // Wait for all broadcasts to complete
+    await Promise.allSettled(targetPromises);
     
-    // Edit status message to show completion
-    await bot.editMessageText(`${strings.messageSent} (${successCount} مورد)`, {
-      chat_id: chatId,
-      message_id: statusMsg.message_id,
-      parse_mode: 'Markdown'
-    });
-    
-    // Send panel again
-    setTimeout(async () => {
-      await bot.sendMessage(chatId, strings.panelTitle, {
-        parse_mode: 'Markdown',
-        reply_markup: inlineKeyboard
+    // Edit message to show completion
+    if (userState.lastBotMessageId) {
+      await bot.editMessageText(`${strings.messageSent} (${successCount} مورد)`, {
+        chat_id: userState.lastChatId,
+        message_id: userState.lastBotMessageId,
+        parse_mode: 'Markdown'
+      }).catch(err => {
+        console.error('Error editing message:', err.message);
       });
-    }, 1000);
+    }
     
-    // Remove keyboard
-    await bot.sendMessage(chatId, '⌨️ *کیبورد حذف شد*', {
-      parse_mode: 'Markdown',
-      reply_markup: { remove_keyboard: true }
-    });
+    // Wait for a moment and then edit back to panel
+    setTimeout(async () => {
+      // Create inline keyboard for panel
+      const inlineKeyboard = {
+        inline_keyboard: [
+          [{ text: strings.sendGlobalMessage, callback_data: 'send_global' }]
+        ]
+      };
+      
+      if (userState.lastBotMessageId) {
+        await bot.editMessageText(strings.panelTitle, {
+          chat_id: userState.lastChatId,
+          message_id: userState.lastBotMessageId,
+          parse_mode: 'Markdown',
+          reply_markup: inlineKeyboard
+        }).catch(err => {
+          console.error('Error editing message:', err.message);
+        });
+      }
+      
+      // Reset waiting state
+      userState.waitingForGlobalMessage = false;
+      
+      // Remove keyboard
+      await bot.sendMessage(chatId, '⌨️ *کیبورد حذف شد*', {
+        parse_mode: 'Markdown',
+        reply_markup: { remove_keyboard: true }
+      });
+    }, 3000);
   }
 });
+
+// Get chat list periodically (every hour)
+setInterval(async () => {
+  try {
+    const updates = await bot.getUpdates(0, 100, -1);
+    updates.forEach(update => {
+      if (update.message && 
+        (update.message.chat.type === 'group' || 
+         update.message.chat.type === 'supergroup' || 
+         update.message.chat.type === 'channel')) {
+        if (!broadcastTargets.has(update.message.chat.id)) {
+          broadcastTargets.add(update.message.chat.id);
+          console.log(`🟢 Added ${update.message.chat.title} (${update.message.chat.id}) to broadcast list`);
+        }
+      }
+    });
+    console.log(`📋 Refreshed broadcast list. Current count: ${broadcastTargets.size}`);
+  } catch (error) {
+    console.error(`❌ Error refreshing chat list: ${error.message}`);
+  }
+}, 3600000); // Every hour
 
 // Log errors
 bot.on('polling_error', (error) => {
@@ -199,14 +300,8 @@ bot.on('polling_error', (error) => {
 
 console.log('🚀 Bot is running...');
 
-// Helper function to add existing chats to broadcast list
-// You can call this function manually with chatIds you want to add
-function addExistingChats(chatIds) {
-  for (const id of chatIds) {
-    broadcastTargets.add(id);
-  }
-  console.log(`📋 Added ${chatIds.length} existing chats to broadcast list.`);
+// Debug helper: List all broadcast targets
+function listBroadcastTargets() {
+  console.log(`📊 Current broadcast targets (${broadcastTargets.size}):`);
+  broadcastTargets.forEach(id => console.log(` - ${id}`));
 }
-
-// Example usage:
-// addExistingChats([-1001234567890, -1009876543210]);
