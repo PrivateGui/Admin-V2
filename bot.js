@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 
-// Replace with your bot token
-const token = '8181091358:AAHje9osJeCxXaP1vcACF-lqrMpz5pUxVaE'; // Replace this with your actual token
+// Bot token directly in the code (no dotenv)
+const token = '8181091358:AAHje9osJeCxXaP1vcACF-lqrMpz5pUxVaE';
 
 // Create a bot instance
 const bot = new TelegramBot(token, { polling: true });
@@ -46,8 +46,10 @@ bot.getUpdates(0, 100, -1).then(updates => {
 
 // Add chats to broadcast list when the bot is added
 bot.on('my_chat_member', (msg) => {
+  if (!msg || !msg.chat) return;
+  
   const chatId = msg.chat.id;
-  const newStatus = msg.new_chat_member.status;
+  const newStatus = msg.new_chat_member && msg.new_chat_member.status;
   
   // Only add groups and channels (not private chats)
   if (msg.chat.type === 'group' || msg.chat.type === 'supergroup' || msg.chat.type === 'channel') {
@@ -63,6 +65,8 @@ bot.on('my_chat_member', (msg) => {
 
 // Handle 'پنل' command from admin
 bot.onText(/پنل/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from || !msg.from.username) return;
+  
   const chatId = msg.chat.id;
   const username = msg.from.username;
   
@@ -96,6 +100,10 @@ bot.onText(/پنل/, async (msg) => {
 // Handle inline keyboard callback
 bot.on('callback_query', async (callbackQuery) => {
   try {
+    if (!callbackQuery || !callbackQuery.from || !callbackQuery.message || !callbackQuery.message.chat) {
+      return;
+    }
+    
     const username = callbackQuery.from.username;
     const chatId = callbackQuery.message.chat.id;
     const messageId = callbackQuery.message.message_id;
@@ -136,7 +144,9 @@ bot.on('callback_query', async (callbackQuery) => {
     }
     
     // Always answer callback query to remove loading state
-    await bot.answerCallbackQuery(callbackQuery.id);
+    if (callbackQuery.id) {
+      await bot.answerCallbackQuery(callbackQuery.id);
+    }
   } catch (error) {
     console.error(`❌ Error in callback handler: ${error.message}`);
     // Attempt to answer the callback query anyway to prevent hanging UI
@@ -149,6 +159,8 @@ bot.on('callback_query', async (callbackQuery) => {
 // Handle back button
 bot.onText(new RegExp(strings.back), async (msg) => {
   try {
+    if (!msg || !msg.chat || !msg.from || !msg.from.username) return;
+    
     const chatId = msg.chat.id;
     const username = msg.from.username;
     
@@ -207,7 +219,7 @@ bot.onText(new RegExp(strings.back), async (msg) => {
 bot.on('message', async (msg) => {
   try {
     // Skip if message doesn't exist or has no text
-    if (!msg || !msg.text) return;
+    if (!msg || !msg.text || !msg.from || !msg.chat) return;
     
     const chatId = msg.chat.id;
     const username = msg.from.username;
@@ -360,6 +372,11 @@ setInterval(refreshBroadcastTargets, 3600000); // Every hour
 // Log errors
 bot.on('polling_error', (error) => {
   console.error(`🚫 Polling error: ${error.message}`);
+});
+
+// Error handling for unhandled rejections
+process.on('unhandledRejection', error => {
+  console.error('Unhandled Promise rejection:', error);
 });
 
 console.log('🚀 Bot is running...');
