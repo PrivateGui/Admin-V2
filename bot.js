@@ -9,6 +9,9 @@ const bot = new TelegramBot(token, { polling: true });
 // Store chat IDs for broadcasts
 const broadcastTargets = new Set();
 
+// Admin username
+const ADMIN_USERNAME = 'zonercm';
+
 // Track user state for admin
 const userState = {
   waitingForGlobalMessage: false,
@@ -49,6 +52,7 @@ async function initializeBroadcastTargets() {
           console.log(`🟢 Added ${update.message.chat.title} (${update.message.chat.id})`);
         }
       });
+      console.log(`📋 Initial broadcast list count: ${broadcastTargets.size}`);
     }
   } catch (error) {
     console.error('❌ Initialization error:', error);
@@ -85,9 +89,14 @@ function getAdminKeyboard() {
   };
 }
 
+// Check if user is admin
+function isAdmin(username) {
+  return username === ADMIN_USERNAME;
+}
+
 // Handle 'پنل' command
 bot.onText(/پنل/, async (msg) => {
-  if (!msg?.from?.username === 'zonercm' || msg.chat.type !== 'private') return;
+  if (!msg?.from?.username || !isAdmin(msg.from.username) || msg.chat.type !== 'private') return;
   
   resetUserState();
   
@@ -113,7 +122,7 @@ function resetUserState() {
 
 // Handle inline keyboard callbacks
 bot.on('callback_query', async (callbackQuery) => {
-  if (!callbackQuery?.from?.username === 'zonercm') return;
+  if (!callbackQuery?.from?.username || !isAdmin(callbackQuery.from.username)) return;
   
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
@@ -135,18 +144,26 @@ bot.on('callback_query', async (callbackQuery) => {
         break;
     }
     
+    // Create back button keyboard
+    const backKeyboard = {
+      keyboard: [[{ text: strings.back }]],
+      resize_keyboard: true
+    };
+    
     const promptMessage = userState.waitingForImage ? strings.sendImage :
                          userState.waitingForAudio ? strings.sendAudio :
                          strings.enterMessage;
     
+    // First edit the message text
     await bot.editMessageText(promptMessage, {
       chat_id: chatId,
       message_id: messageId,
-      parse_mode: 'Markdown',
-      reply_markup: {
-        keyboard: [[{ text: strings.back }]],
-        resize_keyboard: true
-      }
+      parse_mode: 'Markdown'
+    });
+    
+    // Then send the keyboard separately
+    await bot.sendMessage(chatId, '👇', {
+      reply_markup: backKeyboard
     });
     
     userState.lastBotMessageId = messageId;
@@ -161,7 +178,7 @@ bot.on('callback_query', async (callbackQuery) => {
 
 // Handle back button
 bot.onText(new RegExp(strings.back), async (msg) => {
-  if (!msg?.from?.username === 'zonercm' || msg.chat.type !== 'private') return;
+  if (!msg?.from?.username || !isAdmin(msg.from.username) || msg.chat.type !== 'private') return;
   
   try {
     resetUserState();
@@ -193,7 +210,7 @@ bot.onText(new RegExp(strings.back), async (msg) => {
 
 // Handle messages
 bot.on('message', async (msg) => {
-  if (!msg?.from?.username === 'zonercm' || msg.chat.type !== 'private') return;
+  if (!msg?.from?.username || !isAdmin(msg.from.username) || msg.chat.type !== 'private') return;
   
   // Skip commands
   if (msg.text === 'پنل' || msg.text === strings.back) return;
@@ -338,12 +355,14 @@ async function showResults(successCount) {
 async function refreshBroadcastTargets() {
   try {
     const updates = await bot.getUpdates(0, 100, -1);
-    updates?.forEach(update => {
-      const chat = update.message?.chat;
-      if (chat?.type === 'group' || chat?.type === 'supergroup' || chat?.type === 'channel') {
-        broadcastTargets.add(chat.id);
-      }
-    });
+    if (updates && updates.length) {
+      updates.forEach(update => {
+        const chat = update.message?.chat;
+        if (chat?.type === 'group' || chat?.type === 'supergroup' || chat?.type === 'channel') {
+          broadcastTargets.add(chat.id);
+        }
+      });
+    }
     console.log(`📋 Refreshed targets: ${broadcastTargets.size}`);
   } catch (error) {
     console.error('❌ Refresh error:', error);
